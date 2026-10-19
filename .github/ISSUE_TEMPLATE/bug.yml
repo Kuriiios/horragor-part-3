@@ -1,0 +1,47 @@
+name: Software defect
+description: Record a reproducible implementation defect.
+title: "[BUG] "
+labels: ["bug", "triage"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [Data API, Intelligence API, Streamlit UI, LangGraph, Ingestion, Persistence, Observability, Documentation, CI/CD]
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options: [Critical, High, Medium, Low]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide minimal deterministic steps with secrets and personal data removed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: input
+    id: request
+    attributes:
+      label: Request or trace ID
+      description: Use an opaque identifier only; do not paste trace payloads containing sensitive data.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Proposed regression check

@@ -1,0 +1,25 @@
+FROM ghcr.io/astral-sh/uv:0.11.1 AS uv
+
+FROM python:3.11.15-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
+RUN groupadd --system --gid 10001 app && \
+    useradd --system --uid 10001 --gid app --home-dir /app app
+
+WORKDIR /app
+COPY --from=uv /uv /uvx /bin/
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --extra model --no-install-project
+COPY src ./src
+COPY server ./server
+
+RUN mkdir -p /app/models /app/runtime/logs && chown -R app:app /app
+USER app
+
+EXPOSE 8001
+CMD ["uvicorn", "server.server:app", "--host", "0.0.0.0", "--port", "8001"]

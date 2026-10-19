@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "langfuse": {
+      "source": "langfuse/skills",
+      "sourceType": "github",
+      "skillPath": "skills/langfuse/SKILL.md",
+      "computedHash": "69c3e56475b11c2d9040d85d911b8c4ee537a8462355b960d289fb1df7271613"
+    }
+  }
+}

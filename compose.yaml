@@ -1,0 +1,351 @@
+name: horragor
+
+x-langfuse-environment: &langfuse-environment
+  NEXTAUTH_URL: http://localhost:3000
+  DATABASE_URL: postgresql://postgres:${LANGFUSE_POSTGRES_PASSWORD:?Set LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/postgres
+  SALT: ${LANGFUSE_SALT:?Set LANGFUSE_SALT}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?Set LANGFUSE_ENCRYPTION_KEY}
+  TELEMETRY_ENABLED: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?Set LANGFUSE_CLICKHOUSE_PASSWORD}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?Set LANGFUSE_MINIO_PASSWORD}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?Set LANGFUSE_MINIO_PASSWORD}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?Set LANGFUSE_REDIS_PASSWORD}
+
+x-langfuse-dependencies: &langfuse-dependencies
+  langfuse-postgres:
+    condition: service_healthy
+  langfuse-clickhouse:
+    condition: service_healthy
+  langfuse-minio:
+    condition: service_healthy
+  langfuse-redis:
+    condition: service_healthy
+
+services:
+  tls-init:
+    image: alpine:3.22
+    command: ["/bin/sh", "-c", "apk add --no-cache openssl >/dev/null && /bin/sh /scripts/init-tls.sh"]
+    volumes:
+      - ./deploy/tls/init-tls.sh:/scripts/init-tls.sh:ro
+      - app-tls-ca:/ca
+      - app-tls-server:/server
+    networks: [egress]
+    restart: "no"
+
+  data-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.data
+    environment:
+      HORRAGOR_DATA_API_KEY_FILE: /run/secrets/horragor_data_api_key
+      MOVIES_CSV_PATH: /app/data/aggregated_movies.csv
+      FAISS_INDEX_DIR: /app/data/faiss_index
+      HORRAGOR_ENVIRONMENT: production
+      HORRAGOR_LOG_JSON: "true"
+      HORRAGOR_LOG_FILE: /app/runtime/logs/data-api.jsonl
+    volumes:
+      - ./data:/app/data
+      - data-api-logs:/app/runtime/logs
+    secrets: [horragor_data_api_key]
+    expose: ["8002"]
+    networks: [data-plane, observability]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  intelligence-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command:
+      - uvicorn
+      - src.API.main_api:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --ssl-keyfile
+      - /certs/server/server.key
+      - --ssl-certfile
+      - /certs/server/server.crt
+    depends_on:
+      tls-init:
+        condition: service_completed_successfully
+      data-api:
+        condition: service_healthy
+    environment:
+      HORRAGOR_ENVIRONMENT: production
+      HORRAGOR_AUTH_ENABLED: "true"
+      HORRAGOR_AUTH_USERNAME: ${HORRAGOR_AUTH_USERNAME:-horragor}
+      HORRAGOR_AUTH_PASSWORD_HASH_FILE: /run/secrets/horragor_auth_password_hash
+      HORRAGOR_JWT_SECRET_FILE: /run/secrets/horragor_jwt_secret
+      HORRAGOR_DATA_API_URL: http://data-api:8002
+      HORRAGOR_DATA_API_KEY_FILE: /run/secrets/horragor_data_api_key
+      HORRAGOR_LLM_BASE_URL: http://model-api:8001/v1
+      HORRAGOR_LOG_JSON: "true"
+      HORRAGOR_LOG_FILE: /app/runtime/logs/intelligence-api.jsonl
+      HORRAGOR_REFRESH_TOKEN_DB: /app/runtime/auth/refresh_tokens.db
+      HORRAGOR_ALLOWED_ORIGINS: http://localhost:8501,http://127.0.0.1:8501
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_TRACING_ENVIRONMENT: production
+    volumes:
+      - app-tls-ca:/certs/ca:ro
+      - app-tls-server:/certs/server:ro
+      - auth-data:/app/runtime/auth
+      - intelligence-api-logs:/app/runtime/logs
+    secrets:
+      - horragor_auth_password_hash
+      - horragor_data_api_key
+      - horragor_jwt_secret
+    expose: ["8000"]
+    networks: [data-plane, presentation-plane, model-plane, observability, egress]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request; c=ssl.create_default_context(cafile='/certs/ca/ca.crt'); urllib.request.urlopen('https://intelligence-api:8000/health', context=c, timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    depends_on:
+      intelligence-api:
+        condition: service_healthy
+    environment:
+      HORRAGOR_ENVIRONMENT: production
+      HORRAGOR_API_URL: https://intelligence-api:8000
+      HORRAGOR_API_CA_BUNDLE: /certs/ca.crt
+      HORRAGOR_LOG_JSON: "true"
+      HORRAGOR_LOG_FILE: /app/runtime/logs/ui.jsonl
+    volumes:
+      - app-tls-ca:/certs:ro
+      - ui-logs:/app/runtime/logs
+    ports:
+      - "127.0.0.1:8501:8501"
+    networks: [presentation-plane]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  model-api:
+    profiles: ["local-model"]
+    build:
+      context: .
+      dockerfile: Dockerfile.model
+    environment:
+      HORRAGOR_LLM_MODEL_PATH: /app/models/Qwen3-8B-int4-cw-ov
+      HORRAGOR_LLM_MODEL: qwen3-8b-npu
+      HORRAGOR_LLM_DEVICE: ${HORRAGOR_LLM_DEVICE:-CPU}
+      HORRAGOR_LOG_JSON: "true"
+      HORRAGOR_LOG_FILE: /app/runtime/logs/model-api.jsonl
+    volumes:
+      - ./models:/app/models:ro
+      - model-api-logs:/app/runtime/logs
+    expose: ["8001"]
+    networks: [model-plane, observability]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - app-tls-ca:/etc/prometheus/certs:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [observability]
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.27.0
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./deploy/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+      - app-tls-ca:/certs:ro
+    expose: ["9115"]
+    networks: [data-plane, presentation-plane, observability]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks: [observability]
+    restart: unless-stopped
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    volumes:
+      - uptime-kuma-data:/app/data
+      - app-tls-ca:/certs:ro
+    ports:
+      - "127.0.0.1:3002:3001"
+    networks: [data-plane, observability, presentation-plane]
+    restart: unless-stopped
+
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    depends_on: *langfuse-dependencies
+    environment: *langfuse-environment
+    networks: [langfuse-internal, observability, egress]
+    restart: unless-stopped
+
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    depends_on: *langfuse-dependencies
+    environment:
+      <<: *langfuse-environment
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?Set LANGFUSE_NEXTAUTH_SECRET}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9091
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [langfuse-internal, observability, egress]
+    restart: unless-stopped
+
+  langfuse-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:?Set LANGFUSE_POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    networks: [langfuse-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?Set LANGFUSE_CLICKHOUSE_PASSWORD}
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+      - langfuse-clickhouse-logs:/var/log/clickhouse-server
+    networks: [langfuse-internal]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  langfuse-minio:
+    image: cgr.dev/chainguard/minio:latest
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:?Set LANGFUSE_MINIO_PASSWORD}
+    volumes:
+      - langfuse-minio-data:/data
+    ports:
+      - "127.0.0.1:9091:9000"
+    networks: [langfuse-internal]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  langfuse-redis:
+    image: redis:7
+    command: ["redis-server", "--requirepass", "${LANGFUSE_REDIS_PASSWORD:?Set LANGFUSE_REDIS_PASSWORD}", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - langfuse-redis-data:/data
+    networks: [langfuse-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '${LANGFUSE_REDIS_PASSWORD:?Set LANGFUSE_REDIS_PASSWORD}' ping | grep PONG"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  data-plane:
+    internal: true
+  presentation-plane:
+    internal: true
+  model-plane:
+    internal: true
+  observability:
+    internal: true
+  langfuse-internal:
+    internal: true
+  egress: {}
+
+volumes:
+  app-tls-ca:
+  app-tls-server:
+  auth-data:
+  data-api-logs:
+  intelligence-api-logs:
+  ui-logs:
+  model-api-logs:
+  prometheus-data:
+  grafana-data:
+  uptime-kuma-data:
+  langfuse-postgres-data:
+  langfuse-clickhouse-data:
+  langfuse-clickhouse-logs:
+  langfuse-minio-data:
+  langfuse-redis-data:
+
+secrets:
+  horragor_auth_password_hash:
+    environment: HORRAGOR_AUTH_PASSWORD_HASH
+  horragor_data_api_key:
+    environment: HORRAGOR_DATA_API_KEY
+  horragor_jwt_secret:
+    environment: HORRAGOR_JWT_SECRET

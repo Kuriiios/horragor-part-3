@@ -1,0 +1,28 @@
+name: Feature proposal
+description: Propose a scoped capability linked to a user need and brief requirement.
+title: "[FEATURE] "
+labels: ["enhancement", "proposal"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: User or operational need
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Owning component
+      options: [Data API, Intelligence API, Streamlit UI, LangGraph, Ingestion, Persistence, Observability, Documentation, CI/CD]
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Security, performance, and migration risks

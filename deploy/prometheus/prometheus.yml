@@ -1,0 +1,55 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: intelligence-api
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/certs/ca.crt
+      server_name: intelligence-api
+    static_configs:
+      - targets: ["intelligence-api:8000"]
+
+  - job_name: data-api
+    static_configs:
+      - targets: ["data-api:8002"]
+
+  - job_name: model-api
+    static_configs:
+      - targets: ["model-api:8001"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: component-health-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://data-api:8002/health
+          - http://ui:8501/_stcore/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: component-health-https
+    metrics_path: /probe
+    params:
+      module: [https_internal_2xx]
+    static_configs:
+      - targets:
+          - https://intelligence-api:8000/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

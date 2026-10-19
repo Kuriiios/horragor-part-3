@@ -1,0 +1,47 @@
+name: Agent or monitoring deviation
+description: Archive an unexpected answer, route, retrieval, latency, token, or availability signal.
+title: "[DEVIATION] "
+labels: ["behavior-deviation", "triage"]
+body:
+  - type: dropdown
+    id: signal
+    attributes:
+      label: Detection source
+      options: [Langfuse trace, Prometheus alert, Grafana review, Uptime Kuma, User report, Test or CI, Log review]
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options: [Development, CI, Staging, Production]
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior or threshold
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed deviation
+      description: Redact prompts, credentials, personal data, and private URLs.
+    validations:
+      required: true
+  - type: input
+    id: correlation
+    attributes:
+      label: Request, session, or trace ID
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Include route, node, latency, token totals, status, and timestamps where relevant.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Regression acceptance criteria
+    validations:
+      required: true

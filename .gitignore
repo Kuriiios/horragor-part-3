@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local credentials
+.env
+.ENV
+
+# Runtime state and generated reports
+data/auth/
+runtime/
+htmlcov/
+.coverage
+coverage.xml
+docs/_build/
+.pytest_cache/
+.ruff_cache/
